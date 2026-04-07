@@ -11,11 +11,15 @@
  *
  *                This file is in the public domain.
  *                      Use at your own risk.
+ *
+ *   Ported to SDL2 for macOS.
  */
 
 
 #ifndef __VGA_H_
 #define __VGA_H_
+
+#include <SDL.h>
 
 class VGA
 {
@@ -37,11 +41,14 @@ class VGA
 // kids! don't try this at home :)
 // private:
 
-// double buffer
-   unsigned char *page_draw,
-// pointer to the video memory
-                 *video_buffer;
-
+// double buffer (indexed color, 320x200)
+   unsigned char *page_draw;
+// palette: 256 entries, each with r, g, b (0-63 range like VGA)
+   unsigned char palette[256][3];
+// SDL objects
+   SDL_Window *window;
+   SDL_Renderer *renderer;
+   SDL_Texture *texture;
 };
 
 #endif

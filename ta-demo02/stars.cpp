@@ -13,13 +13,14 @@
  *                      Use at your own risk.
  *
  *
- *   Compile with DJGPP:    gcc *.cpp -s -O2 -o stars.exe -lstdcxx
+ *   Compile with g++ on macOS:
+ *       g++ *.cpp -std=c++11 -O2 -o stars $(sdl2-config --cflags --libs)
  *
  */
 
 #include <iostream>
-#include <stdlib.h>    // for function rand()
-#include <conio>     //              kbhit()
+#include <cstdlib>
+#include <SDL.h>
 #include "vga.h"
 
 // change this to adjust the number of stars
@@ -39,7 +40,7 @@ TStar *stars;
 VGA *vga;
 
 // the main program
-int main()
+int main(int argc, char *argv[])
 {
 // allocate memory for all our stars
     stars = new TStar[MAXSTARS];
@@ -58,8 +59,17 @@ int main()
     vga->SetColour( 2, 48, 48, 48 );  // light grey
     vga->SetColour( 3, 63, 63, 63 );  // white
 // run the main loop
-    while (!kbhit())
+    bool running = true;
+    SDL_Event event;
+    while (running)
     {
+    // handle events (quit on key press or window close)
+       while (SDL_PollEvent(&event))
+       {
+           if (event.type == SDL_QUIT ||
+               event.type == SDL_KEYDOWN)
+               running = false;
+       }
     // clear the temporary buffer
        vga->Clear();
     // update all stars
@@ -87,10 +97,10 @@ int main()
 // free memory
     delete [] (stars);
 // make sure every one knows about flipcode :)
-    cout << "                             The Art Of" << endl;
-    cout << "                         D E M O M A K I N G " << endl << endl;
-    cout << "                       by Alex J. Champandard" << endl << endl;
-    cout << "       Go to http://www.flipcode.com/demomaking for more information." << endl;
+    std::cout << "                             The Art Of" << std::endl;
+    std::cout << "                         D E M O M A K I N G " << std::endl << std::endl;
+    std::cout << "                       by Alex J. Champandard" << std::endl << std::endl;
+    std::cout << "       Go to http://www.flipcode.com/demomaking for more information." << std::endl;
 // we've finished!
     return 0;
 }
