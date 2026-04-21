@@ -25,6 +25,8 @@
 
 // change this to adjust the number of stars
 #define MAXSTARS 256
+#define WIDTH 320
+#define HEIGHT 200
 
 // this record contains the information for one star
 struct TStar
@@ -47,8 +49,8 @@ int main(int argc, char *argv[])
 // randomly generate some stars
     for (int i=0; i<MAXSTARS; i++)
     {
-        stars[i].x = rand() % 320;
-        stars[i].y = rand() % 200;
+        stars[i].x = rand() % WIDTH;
+        stars[i].y = rand() % HEIGHT;
         stars[i].plane = rand() % 3;     // star colour between 0 and 2
     }
 // set mode 320x200x8
@@ -75,16 +77,29 @@ int main(int argc, char *argv[])
     // update all stars
        for (int i=0; i<MAXSTARS; i++)
        {
-        // move this star right, determine how fast depending on which
+        // move this star down, determine how fast depending on which
         // plane it belongs to
-           stars[i].x += (1+(float)stars[i].plane)*0.15;
-        // check if it's gone out of the right of the screen
-           if (stars[i].x>320)
+           stars[i].y += (0.8+(float)stars[i].plane)*0.10;
+
+	//randomly shake left or right
+	if ((int)stars[i].y % 3 == 0) {
+		int move = rand() % 3;
+		move--;
+		if (stars[i].x+move >= 0 && stars[i].x+move < WIDTH) {
+			stars[i].x += (float)move*0.5;
+		}
+		else {
+			stars[i].x -= (float)move*0.5;
+		}
+	}
+        // check if it's gone out of the bottom of the screen
+           if (stars[i].y>HEIGHT)
            {
            // if so, make it return to the left
-              stars[i].x = 0;
+              stars[i].y = 0;
            // and randomly change the y position
-              stars[i].y = rand() % 200;
+              stars[i].x = rand() % WIDTH;
+              stars[i].plane = rand() % 3;
            }
         // draw this star, with a colour depending on the plane
            vga->PutPixel( (int)stars[i].x, (int)stars[i].y, 1+stars[i].plane );
