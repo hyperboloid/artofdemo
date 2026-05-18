@@ -97,7 +97,7 @@ void Shade_Pal( int s, int e, int r1, int g1, int b1, int r2, int g2, int b2 )
  * and use t to do tube shading; the scale stripes are driven by `s`.
  */
 static void stampBody(unsigned char *dst, float cx, float cy, float halfT,
-                      float s, float taperT, float scaleUOffset)
+                      float s, float taperT)
 {
     (void)s;
     if (halfT < 0.5f) return;
@@ -143,11 +143,11 @@ static void stampBody(unsigned char *dst, float cx, float cy, float halfT,
             float across = sqrtf(1.0f - t*t);
 
             // Per-pixel arc-length: use the pixel's own angle around the
-            // ring center, NOT the stamp center's `s`. Subtract scaleUOffset
-            // (driven by phase) so the scale pattern travels WITH the snake
-            // instead of staying fixed in screen space.
+            // ring center, NOT the stamp center's `s`. Without this, every
+            // pixel in one disk stamp shares a single u and we just get
+            // horizontal bands instead of a 2D scale grid.
             float pxAngle = atan2f((float)y - CY, (float)x - CX);
-            float uPix = pxAngle * R_RING - scaleUOffset;
+            float uPix = pxAngle * R_RING; // arc length along the ring
 
             // Scale lattice coordinates.
             float vCell = vPix / SCALE_V;
@@ -220,7 +220,7 @@ static inline float headProfile(float u)
 
 static void drawHead(unsigned char *dst, float cx, float cy, float radius,
                      float fwdX, float fwdY, float outX, float outY,
-                     bool drawMouthCutout, float jawOpen, float scaleUOffset)
+                     bool drawMouthCutout, float jawOpen)
 {
     // Snake head built from a single outline that's split horizontally
     // by the bite-line into an upper jaw (across >= biteLine) and a
@@ -372,7 +372,7 @@ static void drawHead(unsigned char *dst, float cx, float cy, float radius,
                 // `roundness` (cross-section curvature). We derive both
                 // from the head's local geometry below.
                 float pxAngle = atan2f((float)y - CY, (float)x - CX);
-                float uPix = pxAngle * R_RING - scaleUOffset;
+                float uPix = pxAngle * R_RING;
                 float vPix = sqrtf(((float)x - CX)*((float)x - CX) +
                                    ((float)y - CY)*((float)y - CY)) - R_RING;
                 const float SCALE_U = 5.0f;
@@ -555,10 +555,6 @@ void Render(unsigned char *dst, float phase)
     float thetaEnd   = thetaHead - TWO_PI + TAIL_OVERLAP;
     float dTheta = (thetaEnd - thetaStart) / (float)steps;
 
-    // Scale UV offset: scales rotate WITH the snake so they appear
-    // attached to the body rather than to screen space.
-    float scaleUOffset = phase * R_RING;
-
     for (int i = 0; i <= steps; i++)
     {
         float t01 = (float)i / (float)steps; // 0 at head end, 1 at tail tip
@@ -586,14 +582,14 @@ void Render(unsigned char *dst, float phase)
         }
         float halfT = BODY_THICK_TAIL + (BODY_THICK_HEAD - BODY_THICK_TAIL) * taper;
         float arcS  = (th - thetaStart) * R_RING;
-        stampBody(dst, cx, cy, halfT, arcS, taper, scaleUOffset);
+        stampBody(dst, cx, cy, halfT, arcS, taper);
     }
 
     // Jaws held open at a fixed opening.
     float jawOpen = 0.75f;
 
     // Head goes on top of the tail tip
-    drawHead(dst, headCX, headCY, headR, fwdHX, fwdHY, outHX, outHY, true, jawOpen, scaleUOffset);
+    drawHead(dst, headCX, headCY, headR, fwdHX, fwdHY, outHX, outHY, true, jawOpen);
 }
 
 int main(int argc, char *argv[])
