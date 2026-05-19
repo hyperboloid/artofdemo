@@ -41,20 +41,11 @@ static const float R_RING = 65.0f;
 static const float BODY_THICK_HEAD = 14.0f;
 static const float BODY_THICK_TAIL = 1.5f;
 
-// The body covers angle from THETA_BODY_START (at the head end) around
-// the long way to THETA_BODY_END (at the tail tip). Angles measured CCW
-// from +x; the head sits near theta=0 and we go CCW (positive theta)
-// for one full loop minus the head wedge.
-//
-// In screen space, +x is right and +y is DOWN, so "CCW in math" is
-// "CW visually". This is fine — the snake just appears to wrap one way.
-//
-// Head occupies a small wedge near theta=0. Body starts just past it
-// and continues for nearly a full revolution; tail tip ends slightly
-// short of theta=0 so it enters the mouth.
-static const float HEAD_WEDGE = 0.55f;          // ~32° wide head footprint
-static const float BODY_ARC   = TWO_PI - HEAD_WEDGE * 0.6f; // body length in radians
-static const float TAIL_OVERLAP = -0.30f;       // body extends MORE than one revolution; tail tip wraps past the head's leading edge
+// Angles measured CCW from +x. In screen space +y is DOWN, so "CCW in
+// math" appears "CW visually" — fine, the snake just wraps one way.
+// Body extends MORE than one revolution; the tail tip wraps past the
+// head's leading edge so it enters the mouth.
+static const float TAIL_OVERLAP = -0.30f;
 
 static inline int clampi(int v, int lo, int hi)
 {
@@ -86,20 +77,14 @@ void Shade_Pal( int s, int e, int r1, int g1, int b1, int r2, int g2, int b2 )
 }
 
 /*
- * Stamp a body segment at (cx, cy) with the given half-thickness, scale
- * pattern offset s (arc length used to drive the scale stripes), and
- * radial unit vector (nx, ny) (pointing outward from ring center, used
- * for cross-section shading).
- *
- * For each pixel within the disk we compute:
- *   t = (pixel - center) . (nx, ny)      // signed radial offset
- *   so t = -halfT (inner side) .. +halfT (outer side)
- * and use t to do tube shading; the scale stripes are driven by `s`.
+ * Stamp a body segment as a filled disk at (cx, cy) with the given
+ * half-thickness. Per-pixel shading uses the pixel's own polar position
+ * around the ring center (CX, CY) — not the stamp's local frame — so
+ * overlapping stamps all produce the same color at a given pixel.
  */
 static void stampBody(unsigned char *dst, float cx, float cy, float halfT,
-                      float s, float taperT, float thetaLead, bool applyLeadingCull)
+                      float taperT, float thetaLead, bool applyLeadingCull)
 {
-    (void)s;
     if (halfT < 0.5f) return;
     int x0 = (int)floorf(cx - halfT) - 1;
     int x1 = (int)ceilf (cx + halfT) + 1;
@@ -107,11 +92,6 @@ static void stampBody(unsigned char *dst, float cx, float cy, float halfT,
     int y1 = (int)ceilf (cy + halfT) + 1;
     if (x0 < 0) x0 = 0; if (x1 > 319) x1 = 319;
     if (y0 < 0) y0 = 0; if (y1 > 199) y1 = 199;
-
-    // outward radial unit vector at this centerline point
-    float rlen = sqrtf((cx - CX)*(cx - CX) + (cy - CY)*(cy - CY));
-    float nx = 0, ny = 0;
-    if (rlen > 1e-4f) { nx = (cx - CX) / rlen; ny = (cy - CY) / rlen; }
 
     float h2 = halfT * halfT;
 
@@ -249,7 +229,6 @@ static inline float headProfile(float u)
 }
 
 static void drawHead(unsigned char *dst, float cx, float cy, float radius,
-                     float fwdX, float fwdY, float outX, float outY,
                      bool drawMouthCutout, float jawOpen)
 {
     // Snake head built from a single outline that's split horizontally
@@ -274,14 +253,9 @@ static void drawHead(unsigned char *dst, float cx, float cy, float radius,
     if (bx0 < 0) bx0 = 0; if (bx1 > 319) bx1 = 319;
     if (by0 < 0) by0 = 0; if (by1 > 199) by1 = 199;
 
-    // Hinge for lower jaw, moved forward from the back so the rear of
-    // the lower jaw stays flush with the body (no diagonal notch where
-    // the jaw rotation cuts away from the body silhouette).
-    const float hingeAlong  = backAlong + radius * 0.55f;
-    const float hingeAcross = biteLine - radius * 0.05f;
-    float jawAngle = jawOpen * 0.55f;
-    float cosJaw = cosf(jawAngle);
-    float sinJaw = sinf(jawAngle);
+    // Hinge for the mouth-wedge cutout, forward of the back of the head
+    // so the rear of the lower jaw stays flush with the body.
+    const float hingeAlong = backAlong + radius * 0.55f;
 
     // Forward direction at the head, in ring-frame terms: +theta_ring.
     // We'll use ring-curved coordinates so the head follows the same
@@ -289,7 +263,8 @@ static void drawHead(unsigned char *dst, float cx, float cy, float radius,
     //   along  = (theta_at_pixel - thetaHead) * R_RING  (arc length forward)
     //   across = (distance_from_ring_center - R_RING)   (radial offset)
     // This naturally curves the head around the ring just like the body.
-    float thetaHeadLocal = atan2f(cy - CY, cx - CX); // same as thetaHead
+    // Head's centerline angle around the ring, recovered from (cx, cy).
+    float thetaHeadLocal = atan2f(cy - CY, cx - CX);
 
     for (int y = by0; y <= by1; y++)
     {
@@ -326,14 +301,11 @@ static void drawHead(unsigned char *dst, float cx, float cy, float radius,
             // This keeps the head's outer outline smooth where it meets
             // the body (no rotated-jaw seam).
             bool inLower = false;
-            float uL_save = -1.0f;
-            float lC_save = across;
             if (u >= 0.0f && u <= 1.0f && across < biteLine)
             {
                 float halfW = radius * 0.59f * headProfile(u);
                 float bot = biteLine - halfW;
                 if (across >= bot) inLower = true;
-                uL_save = u;
             }
 
             // Mouth wedge: a triangular cutout extending from the hinge
@@ -370,36 +342,40 @@ static void drawHead(unsigned char *dst, float cx, float cy, float radius,
             // ---- shading ----
             int colour;
 
-            // Eye: smaller, with a dark iris and a tiny bright highlight.
-            float eyeAlong  = along  - radius * 0.15f;
-            float eyeAcross = across - radius * 0.40f;
-            float eyeD2 = eyeAlong*eyeAlong + eyeAcross*eyeAcross;
-            // Highlight is a single pixel offset upper-back of the pupil.
-            float hlAlong  = eyeAlong  + 1.0f;
-            float hlAcross = eyeAcross - 1.0f;
-            float hlD2 = hlAlong*hlAlong + hlAcross*hlAcross;
+            // Eye / brow / nostril features only apply to the upper jaw.
+            // The cascade below guards each branch with inUpper, so skip
+            // the feature math entirely for non-upper pixels.
+            float eyeD2 = 1e9f, hlD2 = 1e9f, browVal = 1e9f, nostrilD2 = 1e9f;
+            bool onLip = false;
+            if (inUpper)
+            {
+                float eyeAlong  = along  - radius * 0.15f;
+                float eyeAcross = across - radius * 0.40f;
+                eyeD2 = eyeAlong*eyeAlong + eyeAcross*eyeAcross;
+                // Highlight is a single pixel offset upper-back of the pupil.
+                float hlAlong  = eyeAlong  + 1.0f;
+                float hlAcross = eyeAcross - 1.0f;
+                hlD2 = hlAlong*hlAlong + hlAcross*hlAcross;
 
-            // Brow ridge: a thick dark band above the eye, angled to
-            // match the reference's menacing brow. We test in a rotated
-            // ellipse: along in [-0.1r, 0.45r], across near 0.62r, but
-            // the across-center slopes downward as along increases so
-            // the brow angles from high-back to low-front (over the eye).
-            float browAlong  = along - radius * 0.18f;
-            float browCenterAcross = radius * (0.62f - browAlong * 0.04f / radius);
-            float browAcrossOffset = across - browCenterAcross;
-            // Elliptical band: half-length 0.30*r, half-thickness 1.4 px
-            float browVal = (browAlong * browAlong) / ((radius * 0.30f) * (radius * 0.30f))
-                          + (browAcrossOffset * browAcrossOffset) / (1.8f * 1.8f);
+                // Brow ridge: thick dark band above the eye, an ellipse
+                // whose center slopes down with along — high-back to
+                // low-front (over the eye).
+                float browAlong = along - radius * 0.18f;
+                float browCenterAcross = 0.62f * radius - browAlong * 0.04f;
+                float browAcrossOffset = across - browCenterAcross;
+                // Half-length 0.30*r along, half-thickness 1.8 px across.
+                browVal = (browAlong * browAlong) / ((radius * 0.30f) * (radius * 0.30f))
+                        + (browAcrossOffset * browAcrossOffset) / (1.8f * 1.8f);
 
-            // Nostril: small dark dot near the snout tip, on the upper jaw.
-            float nostrilAlong  = along  - radius * 0.90f;
-            float nostrilAcross = across - radius * 0.20f;
-            float nostrilD2 = nostrilAlong*nostrilAlong + nostrilAcross*nostrilAcross;
+                // Nostril: small dark dot near the snout tip.
+                float nostrilAlong  = along  - radius * 0.90f;
+                float nostrilAcross = across - radius * 0.20f;
+                nostrilD2 = nostrilAlong*nostrilAlong + nostrilAcross*nostrilAcross;
 
-            // Lip crease: dark pixels along the bite-line, only on
-            // solid head (not in front of the mouth wedge).
-            bool onLip = inUpper && fabsf(across - biteLine) < 1.0f
-                         && u > 0.05f && u < 0.95f;
+                // Lip crease: dark pixels along the bite-line (not in
+                // front of the open mouth wedge).
+                onLip = fabsf(across - biteLine) < 1.0f && u > 0.05f && u < 0.95f;
+            }
 
             if (onMouthBorder)
             {
@@ -409,23 +385,23 @@ static void drawHead(unsigned char *dst, float cx, float cy, float radius,
             {
                 colour = 8; // dark mouth cavity
             }
-            else if (inUpper && hlD2 < 1.0f)
+            else if (hlD2 < 1.0f)
             {
                 colour = 250; // small bright catchlight
             }
-            else if (inUpper && eyeD2 < 4.0f)
+            else if (eyeD2 < 4.0f)
             {
                 colour = 4; // dark pupil
             }
-            else if (inUpper && eyeD2 < 9.0f)
+            else if (eyeD2 < 9.0f)
             {
                 colour = 24; // deep eye-socket shadow
             }
-            else if (inUpper && browVal < 1.0f)
+            else if (browVal < 1.0f)
             {
                 colour = 28; // brow ridge — dark angled band
             }
-            else if (inUpper && nostrilD2 < 1.5f)
+            else if (nostrilD2 < 1.5f)
             {
                 colour = 18; // nostril
             }
@@ -436,24 +412,18 @@ static void drawHead(unsigned char *dst, float cx, float cy, float radius,
             else
             {
                 // Use EXACTLY the same shading formula as the body so
-                // the head reads as part of the same tube. The body's
-                // tube shading depends on `t` (signed across) and
-                // `roundness` (cross-section curvature). We derive both
-                // from the head's local geometry below.
-                float pxAngle = atan2f((float)y - CY, (float)x - CX);
-                float uPix = pxAngle * R_RING;
-                float vPix = sqrtf(((float)x - CX)*((float)x - CX) +
-                                   ((float)y - CY)*((float)y - CY)) - R_RING;
+                // the head reads as part of the same tube. Reuse thetaPx
+                // and across (== distR - R_RING) already in scope.
                 const float SCALE_U = 5.0f;
                 const float SCALE_V = 4.0f;
+                float uPix = thetaPx * R_RING;
+                float vPix = across;
                 float vCell = vPix / SCALE_V;
                 int vRow = (int)floorf(vCell + 1000.0f) - 1000;
                 float vFrac = vCell - (float)vRow;
                 float uShift = (vRow & 1) ? 0.5f : 0.0f;
                 float uCell = uPix / SCALE_U + uShift;
-                int uIdx = (int)floorf(uCell + 1000.0f) - 1000;
-                float uFrac = uCell - (float)uIdx;
-                (void)uIdx;
+                float uFrac = uCell - floorf(uCell);
                 float diamond = fabsf(uFrac - 0.5f) + fabsf(vFrac - 0.5f);
                 float crown = 1.0f - diamond * 2.0f;
                 if (crown < 0) crown = 0;
@@ -496,45 +466,6 @@ static void drawHead(unsigned char *dst, float cx, float cy, float radius,
 }
 
 /*
- * Forked tongue: two short line segments emerging from the mouth.
- */
-static void drawTongue(unsigned char *dst, float cx, float cy,
-                       float fwdX, float fwdY, float outX, float outY,
-                       float phase, float jawOpen)
-{
-    // Tongue only emerges when mouth is at least partly open. Below
-    // this threshold the tongue is retracted (not drawn).
-    if (jawOpen < 0.25f) return;
-    float ext = clampf((jawOpen - 0.25f) / 0.75f, 0.0f, 1.0f);
-    float wig = sinf(phase * 4.0f) * 0.25f;
-    float baseAlong = 14.0f;
-    float tipAlong  = baseAlong + 12.0f * ext;
-    float forkSpread = (3.5f + sinf(phase * 6.0f) * 0.5f) * ext;
-    // base point
-    float bx = cx + fwdX * baseAlong;
-    float by = cy + fwdY * baseAlong;
-    // tip points (two forks)
-    for (int side = -1; side <= 1; side += 2)
-    {
-        float tAcross = side * forkSpread + wig * side;
-        float tx = cx + fwdX * tipAlong + outX * tAcross;
-        float ty = cy + fwdY * tipAlong + outY * tAcross;
-        // rasterize a short line from (bx,by) to (tx,ty)
-        int steps = 12;
-        for (int i = 0; i <= steps; i++)
-        {
-            float u = (float)i / (float)steps;
-            int px = (int)(bx + (tx - bx) * u);
-            int py = (int)(by + (ty - by) * u);
-            if (px < 0 || px > 319 || py < 0 || py > 199) continue;
-            // red-pink tongue: reuse high amber range with a bright tip
-            unsigned char c = (i > steps - 3) ? 248 : 230;
-            if (c > dst[py * 320 + px]) dst[py * 320 + px] = c;
-        }
-    }
-}
-
-/*
  * Render one frame. We walk the snake from head (theta near 0, going CCW)
  * along the ring centerline, stamping disks of decreasing radius until
  * we reach the tail tip.
@@ -545,35 +476,14 @@ void Render(unsigned char *dst, float phase)
 {
     memset(dst, 0, 64000);
 
-    // Place the head: centerline theta = phase (so the snake rotates).
+    // Head centerline angle drives the rotation. The head sits ON the
+    // body centerline at exactly thetaHead so head and body share a
+    // radial frame at the join; the body extends slightly past thetaHead
+    // (overlapping the back of the head) so the seam is hidden.
     float thetaHead = phase;
-    // Forward direction at the head = tangent to ring, pointing in the
-    // direction the body extends FROM (so the mouth opens toward where
-    // the tail tip will arrive).
-    // The body extends CCW (increasing theta). The tail comes back
-    // around to just BEFORE thetaHead, so the head's mouth should
-    // point in the -CCW tangent direction (i.e. toward smaller theta).
-    float cosH = cosf(thetaHead), sinH = sinf(thetaHead);
-    float headCenterlineX = CX + R_RING * cosH;
-    float headCenterlineY = CY + R_RING * sinH;
-    // outward radial direction at head:
-    float outHX = cosH;
-    float outHY = sinH;
-    // tangent (CCW direction = +theta direction):
-    float tgHX = -sinH;
-    float tgHY =  cosH;
-    // The head sits ON the body centerline at exactly thetaHead with
-    // no offset, so the head's coordinate frame matches the body's
-    // radial frame at the join. The body ends slightly past thetaHead
-    // (overlapping with the back of the head) so the seam is hidden.
-    float headR = 22.0f;
-    float headCX = headCenterlineX;
-    float headCY = headCenterlineY;
-    // Head forward direction = +tangent (direction of motion).
-    // Mouth opens forward, tail catches up from behind (wrapping the
-    // long way around the ring) and enters the mouth from the front.
-    float fwdHX = tgHX;
-    float fwdHY = tgHY;
+    float headCX = CX + R_RING * cosf(thetaHead);
+    float headCY = CY + R_RING * sinf(thetaHead);
+    float headR  = 22.0f;
 
     // Walk the body centerline. Body extends from inside the back of
     // the head (so the seam is buried under head pixels) all the way
@@ -611,19 +521,18 @@ void Render(unsigned char *dst, float phase)
             taper = 1.0f - s * 0.60f;
         }
         float halfT = BODY_THICK_TAIL + (BODY_THICK_HEAD - BODY_THICK_TAIL) * taper;
-        float arcS  = (th - thetaStart) * R_RING;
         // Only the first 30 stamps near the leading edge need the
         // forward-cull (to flatten the body's start). Beyond that the
         // cull would incorrectly clip the tail tip on the other side.
         bool applyCull = (i < 30);
-        stampBody(dst, cx, cy, halfT, arcS, taper, thetaStart, applyCull);
+        stampBody(dst, cx, cy, halfT, taper, thetaStart, applyCull);
     }
 
     // Jaws held open at a fixed opening.
     float jawOpen = 0.75f;
 
     // Head goes on top of the tail tip
-    drawHead(dst, headCX, headCY, headR, fwdHX, fwdHY, outHX, outHY, true, jawOpen);
+    drawHead(dst, headCX, headCY, headR, true, jawOpen);
 }
 
 int main(int argc, char *argv[])
