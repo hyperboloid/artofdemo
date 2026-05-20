@@ -99,7 +99,13 @@ struct CurvePt {
 // would otherwise cause the head to crawl through them slowly).
 static const int   ARC_LUT_SIZE = 4096;
 static float       arcLut[ARC_LUT_SIZE + 1]; // t-value at each arc-length step
+static float       sLut[ARC_LUT_SIZE + 1];   // arc-length at each t step (forward)
 static float       totalArcLength = 0.0f;
+
+// Per-snake rotation, set once at the start of Render() and read by
+// stampBody() to transform pixel coords back into the canonical
+// (unrotated) snake frame for stationary-scale lookup.
+static float       snakeRot[3] = {0.0f, 0.0f, 0.0f};
 
 static void buildArcLut()
 {
@@ -134,6 +140,33 @@ static void buildArcLut()
         float f = (ds > 1e-6f) ? (s - sArr[j]) / ds : 0.0f;
         arcLut[i] = tArr[j] + f * (tArr[j + 1] - tArr[j]);
     }
+
+    // Forward LUT: arc-length at uniform t samples (linear-interp from
+    // the dense tArr/sArr). Used by per-pixel scale shading so the
+    // lattice is anchored to snake-local arc length and stays
+    // stationary on screen as the snake "moves".
+    for (int i = 0; i <= ARC_LUT_SIZE; i++)
+    {
+        float t = TWO_PI * (float)i / (float)ARC_LUT_SIZE;
+        float idx = t / TWO_PI * (float)N;
+        int j2 = (int)idx;
+        if (j2 < 0) j2 = 0;
+        if (j2 >= N) j2 = N - 1;
+        float f = idx - (float)j2;
+        sLut[i] = sArr[j2] + f * (sArr[j2 + 1] - sArr[j2]);
+    }
+}
+
+// Forward: t in [0, 2*PI) → arc-length from t=0.
+static inline float tToS(float t)
+{
+    t -= floorf(t / TWO_PI) * TWO_PI;
+    float idx = t / TWO_PI * (float)ARC_LUT_SIZE;
+    int i0 = (int)idx;
+    if (i0 < 0) i0 = 0;
+    if (i0 >= ARC_LUT_SIZE) i0 = ARC_LUT_SIZE - 1;
+    float frac = idx - (float)i0;
+    return sLut[i0] + frac * (sLut[i0 + 1] - sLut[i0]);
 }
 
 // Convert an arc-length-fraction phase in [0, 1) (wrapping) to a curve
@@ -178,6 +211,7 @@ static void stampBody(unsigned char *dst, unsigned char *headMask,
                       int snakeIdx, float cx, float cy, float halfT,
                       float taperT, float tangent, float uOffset)
 {
+    (void)tangent; (void)uOffset;
     if (halfT < 0.5f) return;
     int x0 = (int)floorf(cx - halfT) - 1;
     int x1 = (int)ceilf (cx + halfT) + 1;
@@ -191,27 +225,48 @@ static void stampBody(unsigned char *dst, unsigned char *headMask,
     const float SCALE_U = 5.0f;
     const float SCALE_V = 4.0f;
 
-    float ct = cosf(tangent), st = sinf(tangent);
+    // Inverse rotation: pixel screen-space → canonical (unrotated)
+    // snake-local frame. Once in that frame we read polar (theta, r)
+    // and use them as stationary lattice coordinates. Same trick as
+    // the original ouroboros, generalised from "ring polar coords" to
+    // "per-snake local polar coords".
+    float rot = snakeRot[snakeIdx];
+    float cR = cosf(-rot), sR = sinf(-rot);
 
     for (int y = y0; y <= y1; y++)
     {
         float dy = (float)y - cy;
         int row = y * 320;
+        // pixel global offset from screen center for the local-frame
+        // inverse-rotation. (cy is the stamp's center, not the screen
+        // center — recompute relative to (CX, CY) below.)
         for (int x = x0; x <= x1; x++)
         {
             float dx = (float)x - cx;
             float d2 = dx*dx + dy*dy;
             if (d2 > h2) continue;
 
-            float uLocal =  dx * ct + dy * st;
-            float vLocal = -dx * st + dy * ct;
+            // Snake-local frame: pixel position relative to (CX, CY),
+            // un-rotated by the snake's rotation. The loop in that
+            // frame is the canonical r(t) = R0 + A*cos(2t) shape that
+            // doesn't move, so coordinates here are screen-stationary.
+            float gx = (float)x - CX;
+            float gy = (float)y - CY;
+            float lx = gx * cR - gy * sR;
+            float ly = gx * sR + gy * cR;
 
-            float tt = vLocal / halfT;
+            float thetaPx = atan2f(ly, lx);
+            float rPx = sqrtf(lx*lx + ly*ly);
+            float rCenter = R0 + A_LOBE * cosf(2.0f * thetaPx);
+            float vPix = rPx - rCenter;   // signed distance from centerline (stationary)
+            float uPix = tToS(thetaPx);   // arc length along snake at this theta (stationary)
+
+            // Cross-section parameter uses the LOCAL stamp's halfT so
+            // shading still tapers correctly even though the lattice
+            // is stationary.
+            float tt = vPix / halfT;
             tt = clampf(tt, -1.0f, 1.0f);
             float across = sqrtf(1.0f - tt*tt);
-
-            float uPix = uOffset + uLocal;
-            float vPix = vLocal;
 
             float vCell = vPix / SCALE_V;
             int vRow = (int)floorf(vCell + 1000.0f) - 1000;
@@ -240,10 +295,6 @@ static void stampBody(unsigned char *dst, unsigned char *headMask,
 
             int colour = 16 + (int)(shade * 207.0f);
             colour = clampi(colour, 16, 223);
-            // Never overdraw our own snake's head. (Other snakes'
-            // heads are fine to overdraw: their pixels live at lower
-            // z, so a body strand from a different snake passing
-            // above them should occlude.)
             if (headMask[row + x] == (unsigned char)snakeIdx) continue;
             dst[row + x] = (unsigned char)colour;
         }
@@ -514,6 +565,23 @@ static void buildSnake(std::vector<Stamp>& stamps, HeadInfo& outHead,
     }
 }
 
+// Slow the head's apparent advance near the two pinches at p=0.25 and
+// p=0.75 of the loop (where the strand turns sharply through the
+// center). warp() is monotonic with warp(0)=0, warp(1)=1, but its
+// derivative is small near the pinches — so more frames are rendered
+// while the head transitions between lobes, smoothing the change in
+// orientation that would otherwise read as a teleport.
+static inline float warpPhase(float p)
+{
+    p -= floorf(p);
+    // sin(4πp) = 0 at p = 0, 0.25, 0.5, 0.75 (lobe tips and pinches).
+    // Derivative is 1 + k·4π·cos(4πp); at pinches cos(4π·0.25)=-1, so
+    // the derivative drops to (1 - 4πk) — slow. At lobe tips it goes
+    // to (1 + 4πk) — fast. Choose k so the slowdown is noticeable but
+    // monotonic (need 1 - 4πk > 0, so k < ~0.08).
+    return p + 0.07f * sinf(4.0f * PI * p);
+}
+
 void Render(unsigned char *dst, float phase)
 {
     memset(dst, 0, 64000);
@@ -524,11 +592,14 @@ void Render(unsigned char *dst, float phase)
     stamps.reserve(3 * 1024);
     HeadInfo heads[3];
 
+    float warped = warpPhase(phase);
+
     for (int i = 0; i < 3; i++)
     {
         float rot     = (TWO_PI / 3.0f) * (float)i;
         float zPhase  = (TWO_PI / 3.0f) * (float)i;
-        buildSnake(stamps, heads[i], i, rot, zPhase, phase);
+        snakeRot[i] = rot;
+        buildSnake(stamps, heads[i], i, rot, zPhase, warped);
     }
 
     std::sort(stamps.begin(), stamps.end(),

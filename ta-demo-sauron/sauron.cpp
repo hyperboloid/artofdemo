@@ -38,6 +38,15 @@ int eyeMinY, eyeMaxY, eyeMinX, eyeMaxX;
 float eyeCX, eyeCY;
 // half-extents (vertical almond: tall)
 float halfW, halfH;
+// pupil shape (a scaled-down almond, same curve family as the eye)
+float pupilHalfW, pupilHalfH, pupilD, pupilR;
+// bright iris ring radii (around pupil center)
+float irisInner = 9.0f;
+float irisOuter = 17.0f;
+// current pupil offset (gaze direction) and animated target
+float pupilX = 0.0f, pupilY = 0.0f;
+float gazeTX = 0.0f, gazeTY = 0.0f;
+int gazeHold = 0;
 
 // how far flames can travel from the eye edge (in pixels)
 static const int FLAME_REACH = 18;
@@ -101,13 +110,15 @@ void BuildEyeMask()
     const float d = (halfH*halfH - halfW*halfW) / (2.0f*halfW);
     const float R = halfW + d;
 
-    // pupil: vertical slit centered in the eye
-    const float pupilHalfH = 60.0f;
-    const float pupilHalfW = 5.0f;
-
-    // iris bright ring around the pupil
-    const float irisInner = 9.0f;
-    const float irisOuter = 17.0f;
+    // pupil: a scaled-down almond sharing the eye's silhouette.
+    // Same two-circle construction, but with smaller half-extents so
+    // the pupil's edge follows the same curve as the outer eye.
+    // Stamped per-frame at (eyeCX + pupilX, eyeCY + pupilY) so the eye
+    // can look around.
+    pupilHalfW = 5.0f;
+    pupilHalfH = halfH * (pupilHalfW / halfW);
+    pupilD = (pupilHalfH*pupilHalfH - pupilHalfW*pupilHalfW) / (2.0f*pupilHalfW);
+    pupilR = pupilHalfW + pupilD;
 
     int minY = 199, maxY = 0, minX = 319, maxX = 0;
 
@@ -133,38 +144,17 @@ void BuildEyeMask()
 
                 float rad = sqrtf(dx*dx + dy*dy);
 
-                // pupil ellipse — kept dark
-                float pe = (dx*dx)/(pupilHalfW*pupilHalfW) + (dy*dy)/(pupilHalfH*pupilHalfH);
-                if (pe <= 1.0f)
-                {
-                    eyeMask[y*320 + x] = 0;
-                    // inside pupil/eye: no outward flow
-                    inX[y*320 + x] = 0;
-                    inY[y*320 + x] = 0;
-                    continue;
-                }
-
                 // fade brightness toward the almond's edge so it tapers
-                // into flame at the corners
+                // into flame at the corners. The bright iris ring is
+                // NOT baked in here — it is stamped per-frame in Heat()
+                // around the moving pupil position.
                 float edge = fminf(R - dl, R - dr);
                 float edgeFade = fminf(1.0f, edge / 6.0f);
 
-                unsigned char val;
-                if (rad >= irisInner && rad <= irisOuter)
-                {
-                    val = 255;
-                }
-                else if (rad < irisInner)
-                {
-                    val = (unsigned char)clampi((int)(180 + (rad - pupilHalfW) * 12.0f), 0, 255);
-                }
-                else
-                {
-                    // body fading toward the pointed corners
-                    float t = (rad - irisOuter) / (halfH - irisOuter);
-                    if (t < 0) t = 0; if (t > 1) t = 1;
-                    val = (unsigned char)(220.0f - 100.0f*t);
-                }
+                // body fades toward the pointed corners (eye-center radius)
+                float t = (rad - irisOuter) / (halfH - irisOuter);
+                if (t < 0) t = 0; if (t > 1) t = 1;
+                unsigned char val = (unsigned char)(220.0f - 100.0f*t);
                 val = (unsigned char)(val * edgeFade);
                 eyeMask[y*320 + x] = val;
                 inX[y*320 + x] = 0;
@@ -243,6 +233,51 @@ void BuildEyeMask()
 }
 
 /*
+ * Test whether pixel (x,y) is inside the pupil almond at its current
+ * offset position. Uses the same two-circle intersection test as the
+ * outer eye, scaled down to pupil size.
+ */
+static inline bool InsidePupil(int x, int y)
+{
+    float pcx = eyeCX + pupilX;
+    float pcy = eyeCY + pupilY;
+    float dx = (float)x - pcx;
+    float dy = (float)y - pcy;
+    float pdl = sqrtf((dx + pupilD)*(dx + pupilD) + dy*dy);
+    if (pdl > pupilR) return false;
+    float pdr = sqrtf((dx - pupilD)*(dx - pupilD) + dy*dy);
+    return pdr <= pupilR;
+}
+
+/*
+ * Update the gaze: pick a new fixation target occasionally, then ease
+ * the pupil toward it. Targets are constrained to a comfortable range
+ * inside the eye (so the pupil never escapes the iris).
+ */
+void UpdateGaze()
+{
+    if (gazeHold <= 0)
+    {
+        // pick a new target. Keep most targets near center, but
+        // occasionally throw a glance toward a corner.
+        float rx = ((rand() & 0xFFFF) / 32767.5f) - 1.0f;  // [-1, 1]
+        float ry = ((rand() & 0xFFFF) / 32767.5f) - 1.0f;
+        // bias horizontal range narrow (slit-pupil eye is tall),
+        // vertical range wider so glances up/down read clearly
+        float maxX = halfW - pupilHalfW - 4.0f;
+        float maxY = halfH - pupilHalfH - 6.0f;
+        gazeTX = rx * maxX * 0.7f;
+        gazeTY = ry * maxY * 0.6f;
+        // hold the new target for ~60-180 frames (~1-3 seconds at 60fps)
+        gazeHold = 60 + (rand() % 120);
+    }
+    gazeHold--;
+    // ease pupil toward target (lerp)
+    pupilX += (gazeTX - pupilX) * 0.08f;
+    pupilY += (gazeTY - pupilY) * 0.08f;
+}
+
+/*
  * Heat injection: stamp the eye, then sprinkle hot sparks in a thin
  * band just outside the eye so flame is fed perpendicular to its edge.
  */
@@ -261,6 +296,60 @@ void Heat( unsigned char *dst, int frame )
             int v = (int)(m * flicker);
             if (v > 255) v = 255;
             if ((unsigned char)v > dst[row + x]) dst[row + x] = (unsigned char)v;
+        }
+    }
+
+    // stamp the bright iris ring around the moving pupil center.
+    // Limited to pixels actually inside the eye almond so it never
+    // bleeds past the silhouette.
+    float pcxf = eyeCX + pupilX;
+    float pcyf = eyeCY + pupilY;
+    int irisR = (int)(irisOuter + 1.0f);
+    int iy0 = clampi((int)pcyf - irisR, 0, 199);
+    int iy1 = clampi((int)pcyf + irisR, 0, 199);
+    int ix0 = clampi((int)pcxf - irisR, 0, 319);
+    int ix1 = clampi((int)pcxf + irisR, 0, 319);
+    for (int y = iy0; y <= iy1; y++)
+    {
+        int row = y * 320;
+        for (int x = ix0; x <= ix1; x++)
+        {
+            // must be inside the eye almond
+            if (eyeMask[row + x] == 0) continue;
+            float ddx = (float)x - pcxf;
+            float ddy = (float)y - pcyf;
+            float r = sqrtf(ddx*ddx + ddy*ddy);
+            if (r > irisOuter) continue;
+            unsigned char val;
+            if (r >= irisInner)
+            {
+                val = 255;
+            }
+            else
+            {
+                val = (unsigned char)clampi((int)(180 + (r - pupilHalfW) * 12.0f), 0, 255);
+            }
+            int v = (int)(val * flicker);
+            if (v > 255) v = 255;
+            if ((unsigned char)v > dst[row + x]) dst[row + x] = (unsigned char)v;
+        }
+    }
+
+    // stamp pupil (black) on top of the iris at the current gaze offset
+    int pcx = (int)pcxf;
+    int pcy = (int)pcyf;
+    int pr = (int)(pupilHalfW + 2.0f);
+    int ph = (int)(pupilHalfH + 2.0f);
+    int py0 = clampi(pcy - ph, 0, 199);
+    int py1 = clampi(pcy + ph, 0, 199);
+    int px0 = clampi(pcx - pr, 0, 319);
+    int px1 = clampi(pcx + pr, 0, 319);
+    for (int y = py0; y <= py1; y++)
+    {
+        int row = y * 320;
+        for (int x = px0; x <= px1; x++)
+        {
+            if (InsidePupil(x, y)) dst[row + x] = 0;
         }
     }
 
@@ -336,9 +425,13 @@ void Blur_Out( unsigned char *src, unsigned char *dst )
 
             if (sx == 0 && sy == 0)
             {
-                // inside the eye: just copy (the stamped value will
-                // dominate next frame's Heat() anyway). Use a tiny
-                // 4-tap average so the iris doesn't shimmer too hard.
+                // inside the eye: keep pupil pixels black, otherwise
+                // do a tiny 4-tap average so the iris doesn't shimmer.
+                if (InsidePupil(x, y))
+                {
+                    dst[idx] = 0;
+                    continue;
+                }
                 int b = (src[idx-1] + src[idx+1] + src[idx-320] + src[idx+320]) >> 2;
                 dst[idx] = (unsigned char)b;
                 continue;
@@ -414,6 +507,7 @@ int main(int argc, char *argv[])
         }
         if (!running) break;
 
+        UpdateGaze();
         Heat(fire1, frame);
         Blur_Out(fire1, fire2);
         memcpy(vga->page_draw, fire2, 63040);
