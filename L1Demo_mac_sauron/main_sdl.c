@@ -24,6 +24,10 @@ void sauron_init(void);
 void sauron_step(void);
 void sauron_shutdown(void);
 
+/* Audio API (audio_stub.c) */
+void audio_init(void);
+void audio_shutdown(void);
+
 /* The PIC GFX peripheral outputs to a landscape VGA-style display. The
  * framebuffer stores `hres` horizontal samples × `vres` vertical lines,
  * but the display device stretches each sample horizontally by hscale
@@ -111,6 +115,7 @@ int main(int argc, char *argv[])
     shade_pal( 14, 15,  63, 63, 20,  63, 63, 63);
 
     sauron_init();
+    audio_init();
 
     int win_w = (int)(gfx.hres * gfx.hscale) * WINDOW_SCALE;
     int win_h = (int)gfx.vres * WINDOW_SCALE;
@@ -183,6 +188,7 @@ int main(int argc, char *argv[])
         SDL_RenderPresent(ren);
     }
 
+    audio_shutdown();
     sauron_shutdown();
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(ren);
